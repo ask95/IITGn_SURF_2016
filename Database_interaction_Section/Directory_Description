@@ -1,2 +1,4 @@
 Abstract class is a class modelled along the lines of Continuous Query Language (CQL) to be able to query a class using SQL. 
 Class used for handling streams is streampy. Class used for handling SQL queries is sqllite3.
+Example application handles a hypothetical IP stream and the app updates the database in the event of an attempt to access
+a 'blacklisted class'. This sample application is also developed without the abstract class using MySQL. 
