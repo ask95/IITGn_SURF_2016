@@ -1,0 +1,1 @@
+Abstract class is a class modelled along the lines of Continuous Query Language (CQL) to be able to query a class using SQL. Class used for handling streams is streampy. Class used for handling SQL queries is sqllite3.
