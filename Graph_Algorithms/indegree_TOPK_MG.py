@@ -4,7 +4,9 @@ items in the given input stream (after one pass through each element). Frequent 
 on the basis of a parameter k. If the length of the stream is n, then a frequent item is defined
 as an element having frequency atleast (n/k). The size of the output dictionary returned has length k-1. 
 For a particular itemset returned, its not necessary that every element in the set is frequent, 
-however if there are any frequent items, it will definitely lie in the output dictionary with 100% probability.  
+however if there are any frequent items, it will definitely lie in the output dictionary with 100% probability. 
+
+Indegree centrality can be seen as the frequency of the destination vertex. In the case of undirected graphs, the edge aslso increases the source vertex frequency. In this way, Misra-Gries is used for finite space streaming algorithm for computation of n/k frequency elements, which otherwise could have required maintaining an entire graph structure.
 '''
 
 from streampy_classes import Stream
@@ -77,7 +79,7 @@ class indegree_TOPK_MG(object):
     is_directed is the boolean for directedness of graph
     iStream is the input stream of edges
     k sets the fraction for the frequency of the vertice
-    if vertice frequency > N/k, it will be outputted
+    i.e. if vertice frequency > N/k, it will be outputted
     '''
     
     def __init__(self, input_s, k, is_directed, w_size = 15, step_size = 15, oStream = []):
