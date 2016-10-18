@@ -1,5 +1,5 @@
-from Stream import *
-from Agent import *
+from streampy_classes import Stream
+from streampy_classes import Agent
 import numpy as np
 import hashlib
 

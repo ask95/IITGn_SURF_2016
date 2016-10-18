@@ -1,15 +1,16 @@
 """ This module contains the Stream class. The
 Stream and Agent classes are the building blocks
 of PythonStreams.
-(Version 1.0 June 16, 2016. Created by: Mani Chandy)
+(12 October 2015. Mani. Fixed bug. Made _no_value
+and _close classes rather than object.)
 """
 
-from SystemParameters import DEFAULT_NUM_IN_MEMORY,\
-                             DEFAULT_MIN_HISTORY
+from SystemParameters import DEFAULT_STREAM_SIZE,\
+                             DEFAULT_BUFFER_SIZE_FOR_STREAM
 # Import numpy and pandas if StreamArray (numpy) and StreamSeries (Pandas)
 # are used.
 import numpy as np
-#import pandas as pd
+import pandas as pd
 from collections import namedtuple
 
 import logging.handlers
@@ -107,7 +108,7 @@ class Stream(object):
     modified is that values can be appended to its
     tail. The length of a stream (number of elements
     in its sequence) can stay the same or increase,
-    but never decrease. If at some point, the length
+    but never decreases. If at some point, the length
     of a stream is k, then from that point onwards, the
     first k elements of the stream remain unchanged.
 
@@ -138,45 +139,26 @@ class Stream(object):
           with a known sequence of messages, then set the
           initial_value to this sequence.
           default : []
-    num_in_memory: positive int, optional
-          It is the initial value of the number of
-          elements in the stream that are stored in main
-          memory. If the stream has 9000 elements and
-          num_in_memory is 100 then the most recent 100
-          elements of the stream are stored in main memory
-          and the earlier 8900 elements are stored in a file
-          or discarded.
-          num_in_memory may change. It increases if a reader
-          is reading the i-th value of the stream and if j is
-          the index of the most recent value in the stream and
-          |j - i| exceeds num_in_memory.
-          It may decrease if the gap between the indices
-          of the most recent value in the stream and the
-          earliest value being read by any agent is less than
-          num_in_memory
-          default : DEFAULT_NUM_IN_MEMORY
+    stream_size: int, optional
+          stream_size must be a positive integer.
+          It is the largest number of the most recent
+          elements in the stream that are in main memory.
+          default : DEFAULT_STREAM_SIZE
+                    where DEFAULT_STREAM_SIZE is
                     specified in SystemParameters.py
-    min_history: non-negative int, optional
-           The minimum number of elements of the stream that
-           are stored in main memory.
-           If min_history is 3 and the stream has 9000
-           elements then the elements 8997, 8998, 8999 will
-           be stored in main memory even if no agent is reading
-           the stream.
-           min_history is used primarily for debugging.
-           A debugger may need to read early values of the stream,
-           and reading from main memory is faster than reading
-           from a file.
-           default : DEFAULT_MIN_HISTORY
-                     specified in SystemParameters.py.
-
+    buffer_size : int, optional
+           buffer_size must be a positive integer.
+           An exception may be thrown if an agent reads an
+           element with index i in the stream where i is
+           less than the length of the stream - buffer_size.
+           default : DEFAULT_BUFFER_SIZE_FOR_STREAM
+                     specified in SystemParameters.py
 
     Attributes
     ----------
-    recent : list or NumPy array.
-          A list or array that includes the most recent values of
-          the stream. This list or array is padded with default
-          values (see stop).
+    recent : list
+          A list of the most recent values of the stream.
+          recent is a NumPy array if specified.
     stop : int
           index into the list recent.
           s.recent[:s.stop] contains the s.stop most recent
@@ -190,8 +172,6 @@ class Stream(object):
           For a stream s:
                    s.recent[i] = s[i + s.offset]
                       for i in range(s.stop)
-          Note: In later versions, offset will be implemented
-          as a list of ints.
     start : dict of readers.
             key = reader
             value = start index of the reader
@@ -200,11 +180,6 @@ class Stream(object):
             in s.recent which is equivalent to the following
             slice in the entire stream:
                     s[s.start[r]+s.offset: s.stop+s.offset]
-            Invariant:
-            For all readers r:
-                        stop - start[r] <= len(recent)
-            This invariant is maintained by increasing the
-            size of recent when necessary.
     subscribers_set: set
              the set of subscribers for this stream.
              Subscribers are agents to be notified when an
@@ -219,6 +194,12 @@ class Stream(object):
             If the stream is implemented as a list then close_message
             is _close, and for StreamArray the close_message is np.NaN
             (not a number).
+    _buffer_size: int
+            Invariant:
+            For every reader r of stream s:
+                 s.stop - s.start[r] < s._buffer_size
+            A reader can only access _buffer_size number of
+            consecutive, most recent, elements in the stream.
     _begin : int
             index into the list, recent
             recent[:_begin] is not being accessed by any reader;
@@ -261,11 +242,6 @@ class Stream(object):
     An agent r deletes its registration for reading s
     by executing:
                    s.delete_reader(r)
-    An agent that reads a stream is also a subscriber to
-    that stream unless the agent has a call-stream. If
-    an agent has no call-stream and stream s is an input
-    stream of that agent, then whenever s is modified,
-    the agent is told to execute a state transition.
 
     2.2 Slice of a stream that can be read by an agent
 
@@ -354,14 +330,13 @@ class Stream(object):
     5.1 Memory structure
 
     Associated with a stream is:
-    (1) a list or NumPy darray, recent.
+    (1) a list, recent.
     (2) a nonnegative integer stop  where:
        (a) recent[ : stop] contains
            the most recent values of the stream,
        (b) the slice recent[stop:] is
            padded with padding values
-           (either 0 or 0.0 or default value
-           specified by the numpy data type).
+           (either 0 or 0.0).
     (3) a nonnegative integer s.offset where
           recent[i] = stream[i + offset]
              for 0 <= i < s.stop
@@ -371,21 +346,39 @@ class Stream(object):
                0, 1, .., 949
     and s.offset is 900, then
        s.recent[i] = s[900+i] for i in 0, 1, ..., 49.
-    and
-       s.recent[i] is the default value for i > 49.
 
     Invariant:
               len(s) = s.offset + s.stop
     where len(s) is the number of values in stream s.
 
-    The size of s.recent increases and decreases so
-    that the length of slice that any reader may read
-    is less than the length of s.recent.
+    The size of s.recent is the parameter stream_size
+    of s. Recommendations for the value of stream_size
+    are given after a few paragraphs.
+
+    The maximum size of the list that an agent can
+    read is the parameter, buffer_size. Set
+    buffer_size large enough so that the size of
+    the slice that any agent wants to read is less
+    than buffer_size. If an agent is slow compared to
+    the rate at which the stream grows then the
+    buffer_size should be large. For example, if
+    an agent is reading the element in the stream
+    at location i, and the stream has grown to l
+    elements then buffer_size must be greater than
+    l - i.
+
+    (In later implementations, if an agent reads
+    a part of stream s that is not in s.recent, then
+    the value read is obtained from values saved to
+    a file.)
 
     The entire stream, or the stream up to offset,
     can be saved in a file for later processing.
     You can also specify that no part of the stream
-    is saved to a file.
+    is saved to a file. (Note, if the stream s is not
+    saved, and any agent reads an element of the
+    stream s that is not in main memory, then an
+    exception is raised.)
 
     In the current implementation old values of the
     stream are not saved.
@@ -393,116 +386,101 @@ class Stream(object):
     5.2 Memory Management
 
     We illustrate memory management with the
-    following example with num_in_memory=4 and
+    following example with stream_size=4 and
     buffer_size=1
 
     Assume that a point in time, for a stream s,
     the list of values in the stream is
-    [1, 2, 3, 10, 20, 30]; num_in_memory=4;
-    s.offset=3; s.stop=3; and
-    s.recent = [10, 20, 30, 0]. 
-    The length of s.recent is num_in_memory (i.e. 4).
-    The s.stop (i.e. 3) most recent values in the
-    stream are 10, 20, 30.
+    [1, 2, 3, 10, 20]; stream_size=4;
+    s.offset=3; s.stop=2; and
+    s.recent = [10, 20, 0, 0].
+    The size s.recent is stream_size (i.e. 4).
+    The s.stop (i.e. 2) most recent values in the
+    stream are 10 followed by a later value, 20.
     s[3] == 10 == s.recent[0]
     s[4] == 20 == s.recent[1]
-    s[5] == 30 == s.recent[2]
     The values  in s.recent[s.stop:] are padded
     values (zeroes).
 
     A reader r of stream s has access to the list:
       s.recent[s.start[r] : s.stop]
-    Assume that s has two readers r and q where:
-    s.start[r] = 1 and s.start[q] = 2.
-    So agent r can read the slice [1:3] of recent which
-    is the list [20, 30], and agent q can read the slice
-    [2:3] of recent which is the list [30].
-    An invariant is:
-          0 <= s.start[r] <= s.stop
-    for any reader r.
+    So, if for a reader r, s.start[r] is 0,
+    then r has access to the two most
+    recent values in the stream, i.e.,
+    the list [10, 20].
+    If for another reader q, s.start[q]=1,
+    then q has access to the list [20].
+    And for another reader u, s.start[q]=2,
+    then u has access to the empty list [].
 
-    When a value v is appended to stream s, 
-    v is inserted in s.recent[s.stop], replacing a
-    default value, and s.stop is incremented.
-    If s.stop >= len(s.recent) then a new s.recent
-    is created and the values that may be read by
-    any reader are copied into the new s.recent,
-    and s.start, s.stop, and s._begin are modified.
+    When a value v is appended to stream s, then
+    v is inserted in s.recent, replacing a padded
+    value, and s.stop is incremented. If the empty
+    space (i.e., the number of padded values) in
+    s.recent decreases below buffer_size then a
+    new version of s.recent is created containing
+    only the buffer_size most recent values of the
+    stream.
 
-    Example: Start with the previous example.
-    (Assume min_history is 0. This parameter is
-    discussed in the next paragraph.)
-    When a new value, 40 is appended to the stream,
-    the list of values in s becomes.
-    [1, 2, 3, 10, 20, 30, 40].
-    s.recent becomes [10, 20, 30, 40], and
-    s.stop becomes 4. Since s.stop >= len(recent), a
-    new copy of recent is made and the elements that
-    are being read in s are copied into the new copy.
-    So, recent becomes [20, 30, 40, 0] because no
-    agent is reading s[3] = 10. Then s.stop becomes 3
-    and s.offset becomes 4. s.start is modified with
-    s.start[r] becoming 0 and s.start[q] becoming 1,
-    so that r continues to have access to values of
-    the stream after 20; thus r can now read the
-    list [20, 30, 40] and q can read the list [30, 40].
+    Example: Start with the same example as the previous
+    example with buffer_size = 2
 
-    At a later point, agent r informs the stream that it
-    no longer needs to access elements 20, 30, 40 and
-    so s.start[r] becomes 3. Later agent q informs the
-    stream that it no longer needs to access element 30
-    and s.start[q] becomes 2. At this point r has access
-    to the list [] and q to the list [40].
-
-    Now suppose the agent writing stream s extends the
-    stream by the list [50, 60, 70, 80]. At this point,
-    agent q needs to access the list [40, 50, 60, 70, 80]
-    which is longer than len(recent). In this case the
-    size of recent is doubled, and the new recent becomes:
-    [40, 50, 60, 70, 80, 0, 0, 0], with s.start[r] = 1 and
-    s.start[q] = 0. s.stop becomes 5.
-
-    Example of min_history = 4.
-    Now suppose the stream is extended by 90, 100 so
-    that s.recent becomes [40, 50, 60, 70, 80, 90, 100, 0] with
-    s.stop = 7. Suppose r and q inform the stream that they no
-    longer need to access the elements currently in the stream, and
-    so s.start[r] and s.start[q] become 7. (In this case the size of
-    recent may be made smaller (halved); but, this is not done in
-    the current implementation and will be done later.) Next
-    suppose the stream is extended by [110]. Since r and q only need
-    to read this value, all the earlier values could be deleted from
-    recent; however, min_history elements must remain
-    in recent and so recent becomes:
-    [80, 90, 100, 110, 0, 0, 0, 0]
+    Then a new value, 30 is appended to the stream,
+    making the list of values in s:
+    [1, 2, 3, 10, 20, 30]
+    s.stop = 3; s.offset is unchanged (i.e. 3) and
+    s.recent = [10, 20, 30, 0].
+    Now the size of the empty space in s.recent is 1,
+    which is less than buffer_size. So, the program sets
+    s.recent to [20, 30, 0, 0], keeping the buffer_size
+    (i.e. 2) most recent values in s.recent and removing
+    older values from main memory, and it sets s.stop to
+    buffer_size, and increments offset by
+    s.stop - buffer_size. Now
+       s.stop = 2
+       s.offset = 4
 
     """
     def __init__(self, name="NoName", proc_name="UnknownProcess",
                  initial_value=[],
-                 num_in_memory=DEFAULT_NUM_IN_MEMORY,
-                 min_history = DEFAULT_MIN_HISTORY):
+                 stream_size=DEFAULT_STREAM_SIZE,
+                 buffer_size = DEFAULT_BUFFER_SIZE_FOR_STREAM):
+        self._buffer_size = min(buffer_size, DEFAULT_STREAM_SIZE/4)
         self.name = name
+        # Name of the process in which this stream lives.
         self.proc_name = proc_name
-        self.num_in_memory = num_in_memory
-        self.min_history = min_history
+        # Create the list recent and the parameters
+        # associated with garbage collecting
+        # elements in the list.
+        # Pad recent with any padded value (e.g. zeroes).
+        self.recent = self._create_recent(stream_size)
         self._begin = 0
+        # Initially, the stream is initial_value.
+        # offset is 0.
         self.offset = 0
-        self.stop = 0
-        # Initially the stream is open and has no readers or subscribers.
+        self.stop = len(initial_value)
+        self.recent[:self.stop] = initial_value
+        # Initially the stream has no readers.
         self.start = dict()
+        # Initially the stream has no subscribers.
         self.subscribers_set = set()
+        # Initially the stream is open
         self.closed = False
+        assert(isinstance(initial_value, list))
+        # close_message is the message in the stream
+        # which causes the stream to become closed.
+        # (Note: close_message is np.NaN for StreamArray.)
         self.close_message = _close
-        self.recent = self._create_recent(num_in_memory)
-        self.extend(initial_value)
-        
 
     def reader(self, r, start_index=0):
         """
-        A newly registered reader starts reading recent
-        from index start, i.e., reads  recent[start_index:s.stop]
+        Register a reader, r
+
+        The newly registered reader starts reading list recent
+        from index start, i.e., reads the slice
+        recent[start_index:s.stop]
         If reader has already been registered with this stream
-        its start value is updated to start_index.
+        its start value is updated to the parameter in the call.
         """
         self.start[r] = start_index
 
@@ -530,12 +508,26 @@ class Stream(object):
         Append a single value to the end of the
         stream.
         """
-        self.extend([value])
-        return
-    
+        if self.closed:
+            raise Exception("Cannot write to a closed stream.")
+        self.recent[self.stop] = value
+        self.stop += 1
+
+        # Manage the list recent.
+        # Set up a new version of the list
+        # (if necessary) to prevent the list
+        # from getting too long.
+        if self.stop >= len(self.recent) - self._buffer_size:
+            self._set_up_new_recent()
+        
+        # Inform subscribers that the stream has been
+        # modified.
+        for a in self.subscribers_set:
+            a.next()
+
     def extend(self, value_list):
         """
-        Extend the stream by value_list.
+        Extend the stream by the list of values, value_list.
 
         Parameters
         ----------
@@ -552,18 +544,12 @@ class Stream(object):
         # streams implemented as NumPy arrays.
         if isinstance(value_list, np.ndarray):
             value_list = list(value_list)
-        if isinstance(value_list, tuple):
-            value_list = list(value_list)
-        assert (isinstance(value_list, list)), \
-          'value_list = {0}, stream = {1}. value_list is not a list'.format(
-              value_list, self.name)
+        assert (isinstance(value_list, list)), 'value_list =' + str(value_list)
 
         if len(value_list) == 0:
             return
         
         value_list = remove_novalue_and_open_multivalue(value_list)
-        
-        # Deal with messages to close the stream.
         if self.close_message in value_list:
             # Since close_message is in value_list, first output
             # the messages in value_list up to and including 
@@ -577,14 +563,19 @@ class Stream(object):
             close_flag = False
 
         self.new_stop = self.stop + len(value_list)
-
-        # Make a new version of self.recent if necessary
-        if self.new_stop >= len(self.recent):
+        if self.new_stop >= len(self.recent) - self._buffer_size:
             self._set_up_new_recent(self.new_stop)
-            
         self.recent[self.stop: self.stop + len(value_list)] = value_list
+        
+        ## print 'In Stream.py. In extend(). stop = ', self.stop
+        ## print 'stream = ', self.name
+        ## print 'len(value_list) = ', len(value_list)
+        ## print 'len(self.recent) = ', len(self.recent)
+        ## print
+        
         self.stop += len(value_list)
-        # Inform subscribers that the stream has been modified.
+        # Inform subscribers that the stream has been
+        # modified.
         for a in self.subscribers_set:
             a.next()
 
@@ -605,67 +596,46 @@ class Stream(object):
         """
         if self.closed:
             return
+        print 'The stream, ' + self.name + ", in a process is closed."
         self.closed = True
+        # signal subscribers that the stream has closed.
+        # for a in self.subscribers_set: a.signal()
 
     def set_start(self, reader, starting_value):
         """ The reader tells the stream that it is only accessing
         elements of the list recent with index start or higher.
 
         """
+        ## if 'displacement' in self.name:
+        ##     print 'In Stream.py'
+        ##     print 'in set_start'
+        ##     print 'stream = ', self.name
+        ##     print 'reader = ', reader.name
+        ##     print 'starting_value = ', starting_value
+        
         self.start[reader] = starting_value
- 
-    def get_latest(self):
-        """ Returns the latest element in the stream.
-        If the stream is empty then it returns the empty list
+        ## if 'displacement' in self.name:
+        ##     for key, value in self.start.iteritems():
+        ##         print 'agent name = ', key.name
+        ##         print 'starting value = ', value
 
-        """
+
+    def get_latest(self):
         if self.stop == 0:
             return []
         else:
             return self.recent[self.stop - 1]
 
     def get_last_n(self, n):
-        """
-        Parameters
-        ----------
-        n : positive integer
-
-        Returns
-        -------
-            The list of the last n elements of the stream. If the
-            number of elements in the stream is less than n, then
-            it returns all the elements in the stream.
-        Note
-        ----
-
-             Requirement: n >= self.min_history
-        """
         return self.recent[max(self.stop-n, 0) : self.stop]
     
     def get_latest_n(self, n):
-        """ Same as get_last_n()
-
-        """
-        return self.get_last_n(n)
+        return self.recent[max(self.stop-n, 0) : self.stop]
 
     def is_empty(self):
-        """
-        Returns: boolean
-        -------
-            True if and only if this stream is empty.
-
-        """
         return self.stop == 0
 
     def get_contents_after_column_value(self, column_number, value):
-        """ Assumes that the stream consists of rows where the
-        number of elements in each row exceeds column_number. Also
-        assumes that values in the column with index column_number
-        are in increasing order.
-           Returns the rows in the stream for which:
-               row[column_number] >= value
-
-        """
         assert(isinstance(column_number, int))
         assert(column_number >= 0)
         try:
@@ -676,18 +646,13 @@ class Stream(object):
             else:
                 return self.recent[start_index:self.stop]
         except:
-            print 'Error In Stream.py. In get_contents_after_column_value()'
+            print 'In Stream.py. In get_contents_after_column_value()'
             print 'column_number =', column_number
             print 'value =', value
             raise
         return
 
     def get_index_for_column_value(self, column_number, value):
-        """ Similar to get_contents_after_column_value except that the
-        value returned is an index into recent rather than the sequence
-        of rows.
-
-        """
         assert(isinstance(column_number, int))
         try:
             start_index = np.searchsorted(
@@ -697,60 +662,108 @@ class Stream(object):
             else:
                 return start_index
         except:
-            print 'Error in get_index_for_column_value in Stream.py'
             print 'column_number =', column_number
             print 'value =', value
             raise
         return
 
-
     def _set_up_new_recent(self, new_stop=None):
         """
-        stop for the stream will become new_stop. Since
-        new_stop exceeds the length of recent, a new
-        copy of recent is created. This step deletes elements
-        of recent that are not accessed by any reader.
-        If the number of active elements is excessive compared
-        to the length of recent then the size of recent is
-        increased. It the number of active elements is very small
-        compared to the length of recent, the size of of
-        recent may be decreased.
-        
+        Implement a form of garbage collection for streams
+        by updating the list recent to delete elements of
+        the list that are not accessed by any reader.
         """
-
         if not new_stop:
             new_stop = self.stop
         else:
             if new_stop < self.stop:
-                print 'Error in Stream.py. In set_up_new_recent'
+                print 'In Stream.py. In set_up_new_recent'
                 print 'new_stop', new_stop, 'self.stop', self.stop
-
+                print 'Error'
+        # _begin = 0 if start is the empty dict,
+        # else _begin = min over all r of start[r]
         self._begin = (0 if self.start == {}
                        else min(self.start.itervalues()))
-        num_items_active_in_stream = new_stop - self._begin
+        ## if self._begin == 0:
+            ## print 'In Stream.py'
+            ## print 'In set_up_new_recent'
+            ## print 'stream = ', self.name
+            ## print 'begin == 0'
+            ## print 'new_stop = ', new_stop
+            ## print 'len(self.recent) = ', len(self.recent)
+            ## print 'buffer size = ', self._buffer_size
+            ## ## print 'self.start = ', self.start
+            ## for key, value in self.start.iteritems():
+            ##     print 'agent name = ', key.name
+            ##     print 'starting value = ', value
+            ## print
+        
+        # If new_stop < len(recent) - _buffer_size then recent has
+        # enough empty slots to add the values appended to
+        # the stream; so no need to change recent.
+        if new_stop < len(self.recent) - self._buffer_size:
+            return
 
-        self.num_in_memory = len(self.recent)
-        while num_items_active_in_stream >= self.num_in_memory:
-            self.num_in_memory *= 2
+        # recent does not have enough empty slots for the
+        # new values appended to the stream. So, create a
+        # new recent.
+        # If some reader is slow compared to the rate at which
+        # values are appended to the stream, then _begin is
+        # small compared to _buffer_size. On the other hand, if
+        # all readers are moving the windows that they read
+        # forward as fast as values are appended to the stream
+        # then _begin will be large, almost equal to len(recent).
+        # If some reader is very slow, then double the size of
+        # recent but don't double _buffer_size
+        
+        ## print 'In Stream.py. New recent'
+        ## print 'current begin = ', self._begin
+        ## print 'new_stop = ', new_stop
+        ## print 'buffer_size = ', self._buffer_size
+        ## print 'current buffer_size = ', self._buffer_size
+        
+        # The size of the active part of the stream
+        # is new_stop - self._begin.
+        # If the active part fits into the buffer size
+        # then leave the size of recent and the buffer size
+        # unchanged.
+        if new_stop - self._begin <= self._buffer_size:
+            # All readers are keeping up with the stream
+            # Do not change _buffer_size or length of recent
+            new_size = len(self.recent)
+        else:
+            # Some readers (consumers) are not keeping up with
+            # the writers (the producers) of the stream. The
+            # number of active entries in the stream exceeds the buffer
+            # size. So double the size of recent and double the
+            # buffer size.
+            new_size = len(self.recent) * 2
+            self._buffer_size *= 2
+            print 'DOUBLING'
+            print 'new_stop = ', new_stop
+            print 'new size = ', new_size
+            print 'new buffer size = ', self._buffer_size
+            print 'stream = ', self.name
+            print 'self._begin =', self._begin
+            print 'number items in stream = ', self.stop - self._begin
+            for key, value in self.start.iteritems():
+                print 'agent = ', key
+                print 'agent name = ', key.name
+                print 'starting value = ', value
+        
+        # 0 is the padding value.
+        self.new_recent = self._create_recent(new_size)
 
-        # new_recent becomes a list or numpy array with
-        # default elements and of length self.num_in_memory.
-        # Note: _create_recent() is different for
-        # StreamArray.
-        self.new_recent = self._create_recent(self.num_in_memory)
-
-        # Ensure that recent contains at least min_history
-        # elements.
-        if num_items_active_in_stream < self.min_history:
-            self._begin = max(0, new_stop - self.min_history)
-            
-        # Copy active values from recent into new_recent; then
-        # copy new_recent into recent and then delete new_recent.
-        self.new_recent[:self.stop - self._begin] = \
-            self.recent[self._begin: self.stop]
-        self.recent = list(self.new_recent)
+        # Copy the values that readers can read, and ONLY those
+        # values into new_recent. Readers do not read values in
+        # recent with indexes smaller than _begin, and recent has
+        # no values with indexes greater than stop.
+        self.new_recent[:new_stop - self._begin] = \
+            self.recent[self._begin: new_stop]
+        # Copy new_recent into recent
+        #self.recent = list(self.new_recent)
+        self.recent, self.new_recent = self.new_recent, self.recent
         del self.new_recent
-
         # Maintain the invariant recent[i] = stream[i + offset]
         # by incrementing offset since messages in new_recent were
         # shifted left (earlier) from the old recent by offset
@@ -763,12 +776,11 @@ class Stream(object):
         for key in self.start.iterkeys():
             self.start[key] -= self._begin
         self.stop -= self._begin
-        self._begin = (0 if self.start == {}
-                       else min(self.start.itervalues()))
+        self._begin = 0
+
         
 
     def _create_recent(self, size):
-        # Note: This function is different for StreamArray.
         return [0] * size
 
     
@@ -776,163 +788,70 @@ class Stream(object):
 ##########################################################
 class StreamArray(Stream):
     def __init__(self, name="NoName", proc_name="UnknownProcess",
-                 dimension=0, dtype=float, initial_value=None,
-                 num_in_memory=DEFAULT_NUM_IN_MEMORY,
-                 min_history = DEFAULT_MIN_HISTORY):
-        """ A StreamArray is a version of Stream in which recent
-        is a NumPy array. The parameters are the same as for Stream
-        except for the additional ones.
-
-        Parameters
-        ----------
-        dimension: a nonnegative integer, a nonempty tuple or list,
-            or an array of positive integers.
-        dtype: a NumPy data type
-
-        Notes
-        -----
-        If dimension is 0, then:
-            each element of the stream is an an element of type dtype.
-            For example, if dimension is 0, and dtype is float then
-            the stream is a sequence of floats.
-        If dimension is a positive integer, then:
-            each element of the stream is a 1-D array where the 
-            length of the array is dimension. Each element of the array
-            is of type, dtype.
-            In this case, recent is a 2-D array whose elements are of
-            type dtype, and the number of columns of recent is dimension
-            and the number of rows is num_in_memory.
-            We think of the stream as an infinite 2-D array where the
-            number of columns is dimension and the number of rows is
-            unbounded.
-            For example, if dimension is 3 and dtype is float, then the
-            stream is a sequence of NumPy arrays: (float, float, float)
-        If dimension is a tuple or list then:
-            the elements of dimension must be strictly positive integers.
-            In this case, each element of the stream is an N-dimensional
-            array where N is the length of the tuple, and the lengths of
-            the N dimensions are the elements of the tuple. The type of
-            the elements of the array is dtype.
-            For example, if dimension is (2, 2) and dtype is float, then
-            each element of the stream is a 2 X 2 NumPy array of floats.
-
-        """
+                 dimension=0,
+                 dtype=float,
+                 stream_size=DEFAULT_STREAM_SIZE,
+                 buffer_size = DEFAULT_BUFFER_SIZE_FOR_STREAM):
         
-        assert(isinstance(num_in_memory, int) and num_in_memory > 0)
-        assert(isinstance(min_history, int) and min_history >= 0)
+        assert(isinstance(stream_size, int) and stream_size > 0)
+        assert(isinstance(buffer_size, int) and buffer_size > 0)
         assert((isinstance(dimension, int) and dimension >=0) or
                ((isinstance(dimension, tuple) or
                 isinstance(dimension, list) or
                 isinstance(dimension, np.ndarray) and
                 all(isinstance(v, int) and v > 0 for v in dimension)))
                )
-        self.num_in_memory = num_in_memory
-        self.min_history = min_history
+        
+        self._buffer_size = buffer_size
         self.name = name
+        # Name of the process in which this stream lives.
         self.proc_name = proc_name
+        # dimension is either 0, a positive integer, or a nonempty
+        # tuple or list or array of positive integers.
+        # If dimension is 0, then:
+        # each row of the stream is an an element of type dtype.
+        # If dimension is a positive integer, then:
+        # each row of the stream is a 1-D array consisting of dimension
+        # elements. Each element is of data type, dtype.
+        # If dimension is a tuple then it must be a tuple of positive
+        # integers. In this case, each row of the stream is an
+        # N-dimensional array where N is the length of the tuple.
+        # dimension is the dimensions of this array.
         self.dimension = dimension
         self.dtype = dtype
-        self.recent = self._create_recent(num_in_memory)
+        # Create the array recent and the parameters
+        # associated with garbage collecting elements in the stream.
+        # Pad recent with any padded value (e.g. zeroes).
+        # The array recent consists of the most recent rows of the
+        # stream.
+        self.recent = self._create_recent(stream_size)
         self._begin = 0
+        # Initially offset is 0 because the array recent is being 
+        # read from the beginning
         self.offset = 0
+        # Initially, the stream is empty. So, the array recent has
+        # 0 values.
         self.stop = 0
+        # Initially the stream has no readers.
         self.start = dict()
+        # Initially the stream has no subscribers.
         self.subscribers_set = set()
+        # Initially the stream is open
         self.closed = False
         # The command to close the stream is np.NaN
         # which is 'not a number'
         self.close_message = np.NaN
 
     def _create_recent(self, size):
-        """Returns an array of np.zeros of the appropriate type
-        where the length of the array is size.
-
-        """
         if self.dimension is 0:
             return np.zeros(size, self.dtype)
         elif isinstance(self.dimension, int):
             return np.zeros([size, self.dimension], self.dtype)
         else:
-            # d is a tuple or list. Insert size into the zeroth
-            # position of d, and return array with dimension d.
             d = list(self.dimension)
-            d.insert(0, size)
+            d.insert(0, self.size)
             return np.zeros(d, self.dtype)
-
-
-    def append(self, value):
-        """
-        Parameters
-        ----------
-            value: 1-D numpy array
-               The value appended to the StreamArray
-
-        Notes
-        -----
-            See self._create_recent() for a description of
-            the elements of the stream.
-
-        """
-        # Handle case where lst is of type _array.
-        if isinstance(value, _array):
-            multidimensional_array = np.array(value.value)
-            self.extend(multidimensional_array)
-            return
-
-        if self.closed:
-            raise Exception("Cannot write to a closed stream.")
-
-        # row is a single row (element) of the output stream.
-        row = value
-
-        #----------------------------------------------
-        # Check the type of row.
-        assert(row.dtype == self.dtype), \
-            'StreamArray {0} of type {1} is being appended by'\
-            ' an incompatible type {2}'.\
-            format(self.name, self.dtype, row.dtype)
-
-        # Check dimensions of the row.
-        # If dimension is 0 then row must be a scalar or a user defined dtype.
-        # The shape of a user defined dtype is a tuple
-        # (num_rows, num_columns_1,..)
-        if self.dimension == 0:
-            assert(not isinstance(row, np.ndarray) or row.shape is ()), \
-              'Appending StreamArray {0} which has shape (i.e. dimension) 0 '\
-              ' with row {1} which has shape {2}'.format(self.name, row, row.shape)
-
-        # If dimension is a positive integer, then row must be a 1-D
-        # numpy array, where the number of elements in the row is dimension.
-        if isinstance(self.dimension, int) and self.dimension > 0:
-            # row.shape[0] is the number of elements in row.
-            assert(isinstance(row, np.ndarray)), \
-              'Appending row {0} that is not a NumPy array to StreamArray {1}'\
-              ' which has dimension {2}'. format(row, self.name, self.dimension)
-            assert(len(row.shape) == 1 and row.shape[0] == self.dimension),\
-              'Appending row with shape {0} to a StreamArray {1}'\
-              ' which has shape (i.e. dimension) {2}:'.format(row.shape, self.name, self.dimension)
-            
-        # If dimension is a tuple, list or array, then row is a numpy array
-        # whose dimensions, row.shape, must be the same as the dimension of the stream.
-        if (isinstance(self.dimension, tuple) or
-            isinstance(self.dimension, list) or
-            isinstance(self.dimension, np.ndarray)):
-            assert(row.shape == self.dimension),\
-              'Appending row with shape {0} to StreamArray {1} with dimension {2}:'.\
-              format(row.shape, self.name, self.dimension)
-
-        # Finished checking types of elements of row
-        #----------------------------------------------
         
-        # Append row to the stream.
-        self.new_stop = self.stop + 1
-        if self.new_stop >= len(self.recent):
-            self._set_up_new_recent(self.new_stop)
-        self.recent[self.stop] = row
-        self.stop += 1
-        for a in self.subscribers_set:
-            a.next()
-
 
     def extend(self, lst):
         """
@@ -941,81 +860,87 @@ class StreamArray(Stream):
 
         Parameters
         ----------
-            lst: np.ndarray
-
-        Notes
-        -----
-            See self._create_recent() for a description of
-            the elements of the stream.
-
+            lst: np.ndarray or list
+               a may be a multidimensional array.
         """
-        if len(lst) == 0:
+        if _no_value in lst:
             return
         if self.closed:
             raise Exception("Cannot write to a closed stream.")
+        if isinstance(lst, _array): lst = [lst]
+        if any(isinstance(element, _array) for element in lst):
+            for element in lst:
+                a = element.value
+                # Check the type of a.
+                assert(isinstance(a, np.ndarray)),\
+                        "Expect extension of a numpy stream to be a numpy ndarray,\
+                        not '{0}' ".format(a)
+                if self.dimension == 0:
+                    if len(a.shape) != 1:
+                        raise TypeError('Expect array shape {0} == 1'.format(a.shape))
+                if isinstance(self.dimension, int) and self.dimension > 0:
+                    if a.shape[1] != self.dimension:
+                        raise TypeError(
+                            'Expect number of columns in array {0} == StreamArray dimension {1}:'.format(
+                                a.shape[1], self.dimension))
+                if (isinstance(self.dimension, tuple) or
+                    isinstance(self.dimension, list) or
+                    isinstance(self.dimension, np.ndarray)):
+                    if a.shape[1:] != self.dimension:
+                        raise TypeError(
+                            'Expect a.shape[1:] {0} == dimension {1}:'.format(a.shape, self.dimension))
 
-        # output_array is a more suitable name than lst which
-        # is suitable for Stream but not StreamArray.
-        output_array = lst
-        # output_array has an arbitrary (positive) number of rows.
-        # Each row must be of the same type as an element of this
-        # StreamArray. Each row of output_array is inserted into
-        # the StreamArray.
-
-        #----------------------------------------------
-        # Check types of the rows of output_array.
-        assert(isinstance(output_array, np.ndarray)),\
-          'Expect extension of a numpy stream to be a numpy ndarray,'\
-          'not {0}'.format(output_array)
-
-        # Check the type of the array.
-        assert(output_array.dtype == self.dtype),\
-          'StreamArray {0} of type {1} is being extended with an incompatible type {2}'.\
-                format(self.name, self.dtype, output_array.dtype)
-
-
-        # Check dimensions of the array.
-        # If dimension is 0 then output_array must be a 1-D array. Equivalently
-        # the number of "columns" of this array must be 1.
-        if self.dimension == 0:
-            assert(len(output_array.shape) == 1),\
-              'Extending StreamArray {0} which has shape (i.e. dimension) 0' \
-              ' by an array with incompatible shape {1}'.\
-              format(self.name, output_array.shape[1:])
-
-        # If dimension is a positive integer, then output_array must be a 2-D
-        # numpy array, where the number of columns is dimension.
-        if isinstance(self.dimension, int) and self.dimension > 0:
-            # output_array.shape[1] is the number of columns in output_array.
-            assert(output_array.shape[1:][0] == self.dimension),\
-                'Extending StreamArray {0} which has shape (i.e. dimesion) {1}'\
-                ' with an array with incompatible shape {2}'.\
-                format(self.name, self.dimension, output_array.shape[1:][0])
-            
-        # If dimension is a tuple, list or array, then output_array is a numpy array
-        # whose dimensions are output_array.shape[1:].
-        # The number of elements entered into the stream is output_array.shape[0:].
-        # The dimension of each row of output_array must be the same as the
-        # dimension of the entire stream.
-        if (isinstance(self.dimension, tuple) or
-            isinstance(self.dimension, list) or
-            isinstance(self.dimension, np.ndarray)):
-            assert(output_array.shape[1:] == self.dimension),\
-                'Extending StreamArray {0} which has shape (i.e. dimesion) {1}'\
-                ' with an array with incompatible shape {2}'.\
-                format(self.name, self.dimension, output_array.shape[1:])
-
-        # Finished checking types of elements of output_array
-        #----------------------------------------------
-
-        # Append output_array to the stream. Same for StreamArray and Stream classes.
-        self.new_stop = self.stop + len(output_array)
-        if self.new_stop >= len(self.recent):
-            self._set_up_new_recent(self.new_stop)
-        self.recent[self.stop: self.stop + len(output_array)] = output_array
-        self.stop += len(output_array)
+            ## if self.close_message in a:
+            ##     close_flag = True
+            ##     a = a[:a.index(self.close_message)]
+            ## else:
+            ##     close_flag = False
+                if len(a) > 0:
+                    new_stop = self.stop + len(a)
+                    if new_stop >= len(self.recent) - self._buffer_size:
+                        self._set_up_new_recent(new_stop)
+                    ## if self.stop + len(a) > len(self.recent):
+                    ##     self._set_up_new_recent()
+                    try:
+                        self.recent[self.stop: self.stop + len(a)] = a
+                    except:
+                        print 'In Stream.py, StreamArray. extend()'
+                        print 'stream = ', self.name
+                        print 'self.stop = ', self.stop
+                        print 'len(a) = ', len(a)
+                        print 'len(self.recent) = ', len(self.recent)
+                    self.stop = self.stop + len(a)
+                
+            # Finished loop: for element in lst
+        else:
+            if len(lst) > 0:
+                new_stop = self.stop + len(lst)
+                if new_stop > len(self.recent) - self._buffer_size:
+                        self._set_up_new_recent(new_stop)
+                # TODO: CONVERT TO TRY, EXCEPT to catch type of lst
+                try:
+                    for i in range(len(lst)):
+                        self.recent[self.stop+i] = lst[i]
+                except Exception:
+                    value_appended = lst[i]
+                    print 'stream array name: ', self.name
+                    print 'type of values added to the stream array is ', type(value_appended)
+                    if len(value_appended) == 0:
+                        print 'appending zero-length value'
+                    else:
+                        print 'appending', value_appended
+                        print 'self.recent[self.stop+i -1]', self.recent[self.stop+i -1]
+                    logging.error('Error adding values to stream %s')
+                    if type(value_appended) is not np.ndarray:
+                        raise TypeError()
+                    
+                self.stop = self.stop + len(lst)
+                if self.stop >= len(self.recent) - self._buffer_size:
+                        self._set_up_new_recent()
+                
         for subscriber in self.subscribers_set:
             subscriber.next()
+        #self._set_up_new_recent()
 
     def get_contents_after_time(self, start_time):
         try:
@@ -1040,243 +965,3 @@ class StreamSeries(Stream):
         super(StreamSeries, self).__init__(name)
 
     def _create_recent(self, size): return pd.Series([np.nan] * size)
-
-
-
-def main():
-    #################################################
-    #   TEST SUITE
-    #################################################
-
-    txyz_dtype = np.dtype([('time','int'), ('data', '3float')])
-
-    #--------------------------------------------
-    # Testing StreamArray with positive dimension
-    s = StreamArray(name='s', dimension=3)
-    s.append(np.zeros(3))
-    assert(s.stop == 1)
-    assert(np.array_equal(s.recent[s.stop], np.array([0.0, 0.0, 0.0])))
-    s.extend(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
-    
-    assert(np.array_equal(s.recent[:s.stop],
-                          np.array([[0.0, 0.0, 0.0],
-                                    [1.0, 2.0, 3.0],
-                                    [4.0, 5.0, 6.0]]
-                                    )))
-    
-    #---------------------------------------------------------------
-    # Testing StreamArray with zero dimension and user-defined dtype
-    t = StreamArray(name='t', dimension=0, dtype=txyz_dtype)
-    assert(t.stop == 0)
-    t.append(np.array((0, [0.0, 0.0, 0.0]), dtype=txyz_dtype))
-    assert(t.stop == 1)
-    t.append(np.array((2, [11.0, 12.0, 13.0]), dtype=txyz_dtype))
-    assert (t.stop==2)
-    a =  np.array([(0, [0.0, 0.0, 0.0]),
-                   (2, [11.0, 12.0, 13.0])],
-                   dtype=txyz_dtype)
-    assert all(t.recent[:t.stop] == a)
-    t.extend(np.zeros(2, dtype=txyz_dtype))
-    a = np.array([(0, [0.0, 0.0, 0.0]),
-                   (2, [11.0, 12.0, 13.0]),
-                   (0, [0.0, 0.0, 0.0]),
-                   (0, [0.0, 0.0, 0.0])],
-                   dtype=txyz_dtype)
-    assert(t.stop == 4)
-    assert all(t.recent[:t.stop] == a)
-
-    #---------------------------------------------------------------
-    # Testing simple Stream
-    u = Stream('u')
-    v = Stream('v')
-    u.extend(range(4))
-    assert u.recent[:u.stop] == [0, 1, 2, 3]
-    v.append(10)
-    v.append([40, 50])
-    assert v.recent[:v.stop] == [10, [40, 50]]
-    v.extend([60, 70, 80])
-    assert v.recent[:v.stop] == [10, [40, 50], 60, 70, 80]
-
-    ######################################################
-    # TESTING GROWTH OF recent
-    ######################################################
-    import random
-    # Test data for StreamArray with user-defined data type.
-    test_data = np.zeros(128, dtype=txyz_dtype)
-    for i in range(len(test_data)):
-        test_data[i]['time']= random.randint(0, 1000)
-        for j in range(3):
-            test_data[i]['data'][j] = random.randint(2000, 9999)
-
-    w = StreamArray(name='w', dimension=0, dtype=txyz_dtype,
-                    num_in_memory=8, min_history=4)
-    assert(len(w.recent) == 8)
-    w.reader('a')
-    w.reader('b')
-    assert(w.start == {'a':0, 'b':0})
-
-    # Doubling size of recent because number of active
-    # elements (10) exceeds the previous size (8) of recent.
-    w.extend(test_data[:10])
-    assert(len(w.recent) == 16)
-    assert(w.stop == 10)
-    assert(all(w.recent[:10] == test_data[:10]))
-
-    # Change start values for readers
-    w.set_start('a', 10)
-    assert(w.start == {'a':10, 'b':0})
-    w.set_start('b', 10)
-    assert(w.start == {'a':10, 'b':10})
-
-    # Extending stream without increasing size of recent.
-    w.extend(test_data[10:20])
-    assert(len(w.recent) == 16)
-    assert(w.stop == 10)
-    assert(all(w.recent[:10] == test_data[10:20]))
-    assert(w.start == {'a':0, 'b':0})
-
-    # Extending stream and causing recent to double in size.
-    w.extend(test_data[20:32])
-    assert(len(w.recent) == 32)
-    assert(w.stop == 22)
-    assert(all(w.recent[:22] == test_data[10:32]))
-    assert(w.start == {'a':0, 'b':0})
-
-    # Extending stream and causing recent to double in size.
-    w.extend(test_data[32:50])
-    assert(len(w.recent) == 64)
-    assert(w.stop == 40)
-    assert(all(w.recent[:40] == test_data[10:50]))
-    assert(w.start == {'a':0, 'b':0})
-
-    # Extending stream without increasing size of recent.
-    w.extend(test_data[50:64])
-    assert(len(w.recent) == 64)
-    assert(w.stop == 54)
-    assert(all(w.recent[:54] == test_data[10:64]))
-    assert(w.start == {'a':0, 'b':0})
-    w.set_start('a', 53)
-    assert(w.start == {'a':53, 'b':0})
-    w.set_start('b', 54)
-    assert(w.start == {'a':53, 'b':54})
-
-    # Extending stream without increasing size of recent.
-    w.extend(test_data[64:73])
-    assert(len(w.recent) == 64)
-    assert(w.stop == 63)
-    assert(all(w.recent[:63] == test_data[10:73]))
-    assert(w.start == {'a':53, 'b':54})
-
-    # Change start values for readers
-    w.set_start('a', 63)
-    w.set_start('b', 62)
-    assert(w.start == {'a':63, 'b':62})
-
-    # Checking min_history
-    w.extend(test_data[73:74])
-    assert(len(w.recent) == 64)
-    assert(w.stop == 4)
-    assert(all(w.recent[:4] == test_data[70:74]))
-    assert(w.start == {'a':3, 'b':2})
-
-    # Checking append with StreamArray
-    w.append(test_data[74])
-    assert(len(w.recent) == 64)
-    assert(w.stop == 5)
-    assert(all(w.recent[:5] == test_data[70:75]))
-    assert(w.start == {'a':3, 'b':2})
-
-    ordered_test_data = np.copy(test_data)
-    for i in range(len(ordered_test_data)):
-        ordered_test_data[i]['time'] = i
-
-    #------------------------------------------
-    # Test helper functions: get_contents_after_column_value()
-    y = StreamArray(name='y', dimension=0, dtype=txyz_dtype,
-                    num_in_memory=64, min_history=4)
-    y.extend(ordered_test_data[:60])
-    assert(len(y.recent) == 64)
-    assert(y.stop == 60)
-    assert(all(y.recent[:60] == ordered_test_data[:60]))
-
-    assert all (y.get_contents_after_column_value(column_number=0, value=50) ==
-                ordered_test_data[50:60])
-    assert all(y.get_contents_after_time(start_time=50) ==
-               ordered_test_data[50:60])
-    assert(y.get_index_for_column_value(column_number=0, value=50) ==
-           50)
-
-    #------------------------------------------
-    # Test helper functions: get_last_n()
-    assert all(w.get_last_n(n=2) == test_data[73:75])
-    
-
-    # TESTING regular Stream class
-    x = Stream(name='x', num_in_memory=8, min_history=4)
-    assert(len(x.recent) == 8)
-    assert(x.stop == 0)
-
-    # Test append
-    x.append(10)
-    assert(len(x.recent) == 8)
-    assert(x.stop == 1)
-    assert(x.recent[0] == 10)
-    x.append(20)
-    assert(len(x.recent) == 8)
-    assert(x.stop == 2)
-    assert(x.recent[:2] == [10, 20])
-
-    # Test extend
-    x.extend([30, 40])
-    assert(len(x.recent) == 8)
-    assert(x.stop == 4)
-    assert(x.recent[:4] == [10, 20, 30, 40])
-    x.extend([])
-    assert(len(x.recent) == 8)
-    assert(x.stop == 4)
-    assert(x.recent[:4] == [10, 20, 30, 40])
-    x.extend([50])
-    assert(len(x.recent) == 8)
-    assert(x.stop == 5)
-    assert(x.recent[:5] == [10, 20, 30, 40, 50])
-
-    x.reader('a', 3)
-    x.reader('b', 4)
-    assert(x.start == {'a':3, 'b':4})
-    
-    x.extend([1, 2, 3, 4, 5])
-    assert(len(x.recent) == 8)
-    assert(x.stop == 7)
-    assert(x.recent[:7] == [40, 50, 1, 2, 3, 4, 5])
-    assert(x.start == {'a':0, 'b':1})
-
-    x.reader('a', 7)
-    x.reader('b', 7)
-    assert(x.start == {'a':7, 'b':7})
-
-    # Test min_history
-    x.append(6)
-    assert(len(x.recent) == 8)
-    # min_history is 4
-    assert(x.stop == 4)
-    assert(x.recent[:4] == [3, 4, 5, 6])
-    assert(x.start == {'a':3, 'b':3})
-
-    # Test doubling
-    x.extend(range(0, 320, 10))
-    assert(len(x.recent) == 64)
-    assert(x.stop == 33)
-    assert(x.recent[0] == 6)
-    assert(x.recent[1:33] == range(0, 320, 10))
-
-    #------------------------------------------
-    # Test helper functions
-    assert(x.get_last_n(n=2) == [300, 310])
-    
-
-    
-    
-    
-
-if __name__ == '__main__':
-    main()

@@ -321,18 +321,18 @@ def window_agent(f, inputs, outputs, state, call_streams,
             # in_lists[j].list is the list of messages on the j-th input stream.
             windows = [in_lists[j].list[window_starts[j]:window_starts[j]+window_size] \
                        for j in range_in]
-            try:
-                if state is None:
-                    increments = f(windows)
-                else:
-                    increments, state = f(windows, state)
-            except:
-                print 'In Operators.py'
-                print 'In window_agent'
-                print 'state = ', state
-                print 'windows = ', windows
-                print 'f = ', f.__name__
-                raise Exception
+            #try:
+            if state is None:
+                increments = f(windows)
+            else:
+                increments, state = f(windows, state)
+##            except:
+##                print 'In Operators.py'
+##                print 'In window_agent'
+##                print 'state = ', state
+##                print 'windows = ', windows
+##                print 'f = ', f.__name__
+##                raise Exception
                 
             # Remove _no_value and open up _multivalue elements in
             # each [increments[k]].
@@ -348,11 +348,7 @@ def window_agent(f, inputs, outputs, state, call_streams,
                 for k in range_out:
                     output_lists[k].extend([increments[k]])
             except:
-                print 'In operators.py; in window_agent'
-                print 'len(range_out) = ', len(range_out)
-                print 'len(output_lists) = ', len(output_lists)
-                print 'len(increments) = ', len(increments)
-                print 'increments = ', increments
+                pass
             window_starts = [v+step_size for v in window_starts]
         in_lists_start_values = [in_list.start + num_steps*step_size for in_list in in_lists]
         return (output_lists, state, in_lists_start_values)
@@ -1014,57 +1010,57 @@ def asynch_element_agent(
     Agent(inputs, outputs, transition, state, call_streams)
 
 
-def asynch_element_func(
-        f, inputs, num_outputs, state, call_streams=None,
-        window_size=None, step_size=None):
-    
-    assert_is_list_of_streams_or_None(call_streams)
-
-    def transition(in_lists, state):
-        # If the input data is empty then return empty lists for
-        # each output stream, and leave the state and the starting point
-        # for each input stream unchanged.
-        if all(v.stop <= v.start for v in in_lists):
-            return ([[]]*num_outputs, state, [v.start for v in in_lists])
-
-        # Assert at least one input stream has unprocessed data.
-        
-        # output_lists[j] will be sent on output stream j
-        output_lists = []
-        for _ in range(num_outputs):
-            output_lists.append([])
-        #output_lists = [[]]*num_outputs
-        for stream_number, v in enumerate(in_lists):
-            # if v.stop <= v.start then skip this input stream
-            if v.stop > v.start:
-                # Carry out a state transition for this input
-                # stream.
-                # input_list is the list of new values on this
-                # stream. Compute the incremental list generated
-                # by each element in input list due to a transition,
-                # i.e., an execution of f.
-                input_list = v.list[v.start:v.stop]
-                for element in input_list:
-                    if state is None:
-                        output_lists_increment = \
-                          f((element, stream_number))
-                    else:
-                        # This function has state.
-                        output_lists_increment, state = \
-                          f((element, stream_number), state)
-                    for k in range(num_outputs):
-                        ## output_lists_increment[k] = \
-                        ##   remove_novalue_and_open_multivalue(
-                        ##       [output_lists_increment[k]])
-                        output_lists[k].extend(output_lists_increment[k])
-                        
-        return (output_lists, state, [v.stop for v in in_lists])
-
-    
-    # Create agent
-    output_streams = [Stream() for i in range(num_outputs)]
-    Agent(inputs, output_streams, transition, state, call_streams)
-    return output_streams
+##def asynch_element_func(
+##        f, inputs, num_outputs, state, call_streams=None,
+##        window_size=None, step_size=None):
+##    
+##    assert_is_list_of_streams_or_None(call_streams)
+##
+##    def transition(in_lists, state):
+##        # If the input data is empty then return empty lists for
+##        # each output stream, and leave the state and the starting point
+##        # for each input stream unchanged.
+##        if all(v.stop <= v.start for v in in_lists):
+##            return ([[]]*num_outputs, state, [v.start for v in in_lists])
+##
+##        # Assert at least one input stream has unprocessed data.
+##        
+##        # output_lists[j] will be sent on output stream j
+##        output_lists = []
+##        for _ in range(num_outputs):
+##            output_lists.append([])
+##        #output_lists = [[]]*num_outputs
+##        for stream_number, v in enumerate(in_lists):
+##            # if v.stop <= v.start then skip this input stream
+##            if v.stop > v.start:
+##                # Carry out a state transition for this input
+##                # stream.
+##                # input_list is the list of new values on this
+##                # stream. Compute the incremental list generated
+##                # by each element in input list due to a transition,
+##                # i.e., an execution of f.
+##                input_list = v.list[v.start:v.stop]
+##                for element in input_list:
+##                    if state is None:
+##                        output_lists_increment = \
+##                          f((element, stream_number))
+##                    else:
+##                        # This function has state.
+##                        output_lists_increment, state = \
+##                          f((element, stream_number), state)
+##                    for k in range(num_outputs):
+##                        ## output_lists_increment[k] = \
+##                        ##   remove_novalue_and_open_multivalue(
+##                        ##       [output_lists_increment[k]])
+##                        output_lists[k].extend(output_lists_increment[k])
+##                        
+##        return (output_lists, state, [v.stop for v in in_lists])
+##
+##    
+##    # Create agent
+##    output_streams = [Stream() for i in range(num_outputs)]
+##    Agent(inputs, output_streams, transition, state, call_streams)
+##    return output_streams
 
 """
 PART 2 OF MODULE.
@@ -1113,8 +1109,8 @@ def h(f_type, *args):
         return window_func(*args)
     elif f_type is 'timed':
         return timed_func(*args)
-    elif f_type is 'asynch_element':
-        return asynch_element_func(*args)
+##    elif f_type is 'asynch_element':
+##        return asynch_element_func(*args)
     else:
         return 'no match'
 
@@ -1736,39 +1732,39 @@ def main():
     x_stream = Stream('x')
     w_stream = Stream('w')
 
-    y_stream = stream_func(
-        inputs=x_stream,
-        f_type='element',
-        f=sums,
-        state=0.0,
-        num_outputs=1)
-    y_stream.set_name('cumulative sum of x')
+##    y_stream = stream_func(
+##        inputs=x_stream,
+##        f_type='element',
+##        f=sums,
+##        state=0.0,
+##        num_outputs=1)
+##    y_stream.set_name('cumulative sum of x')
 
-    z_stream = stream_func(
-        inputs=[x_stream, w_stream],
-        f_type='asynch_element',
-        f=sums_asynch,
-        state=0.0,
-        num_outputs=1)
-    z_stream.set_name('asynch element. Cumulative sum of x and w')
+##    z_stream = stream_func(
+##        inputs=[x_stream, w_stream],
+##        f_type='asynch_element',
+##        f=sums_asynch,
+##        state=0.0,
+##        num_outputs=1)
+##    z_stream.set_name('asynch element. Cumulative sum of x and w')
 
-    r_stream, s_stream = stream_func(
-        inputs=[x_stream, w_stream],
-        f_type='asynch_element',
-        f=max_min,
-        state=(0, 1000),
-        num_outputs=2)
-    r_stream.set_name('asynch element. max of x and w')
-    s_stream.set_name('asynch element. min of x and w')
+##    r_stream, s_stream = stream_func(
+##        inputs=[x_stream, w_stream],
+##        f_type='asynch_element',
+##        f=max_min,
+##        state=(0, 1000),
+##        num_outputs=2)
+##    r_stream.set_name('asynch element. max of x and w')
+##    s_stream.set_name('asynch element. min of x and w')
 
     x_stream.extend(range(5))
     w_stream.extend([100, -1, 10, 201, -31, 72])
     x_stream.print_recent()
     w_stream.print_recent()
-    y_stream.print_recent()
-    z_stream.print_recent()
-    r_stream.print_recent()
-    s_stream.print_recent()
+    #y_stream.print_recent()
+    #z_stream.print_recent()
+    #r_stream.print_recent()
+    #s_stream.print_recent()
 
     A = Stream('A')
     print_stream(A)
