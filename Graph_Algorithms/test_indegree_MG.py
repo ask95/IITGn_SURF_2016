@@ -10,11 +10,28 @@ however if there are any frequent items, it will definitely lie in the output di
 from streampy_classes import Stream
 from streampy_classes import Agent
 from streampy_classes import Operators
-#from examples_element_wrapper import print_stream
+from indegree_TOPK_MG import *
 import networkx as nx
 
 #from Misra_Gries_list import Misra_Gries_list
 
+
+def test_MG_Class():
+    input_stream = Stream.Stream('input')
+    a = indegree_TOPK_MG(input_stream, 3, 1, 4, 4)
+    input_stream.extend([(3,1),(4,1)])
+    test_dict1 = a.topK_query()
+    assert len(test_dict1) == 0
+    print "Hey"
+    input_stream.extend([(7,2),(2,1)])
+    test_dict1 = a.topK_query()
+    assert 1 in test_dict1
+    input_stream.extend([(6,2),(2,1),(1,2)])
+    a.topK_query()
+    assert 1 in test_dict1
+    assert 2 in test_dict1
+
+'''
 def edge_update(iK, iDict, iNode, iBool):
     if iDict.has_key(iNode):
         iDict[iNode] += 1
@@ -28,14 +45,14 @@ def edge_update(iK, iDict, iNode, iBool):
 
 
 def Misra_Gries_fn(K, isDirected):
-    '''
+    
     node1 is the source node
     node2 is the sink node
     bool1 is the boolean corresponding to whether the node1 has place in the MG frequency dictionary
     bool2 ------------------------------------------- node2 ----------------------------------------
     whether a subtraction should occur is a product of bool1 and bool2
     IN a directed graph, only node2 will have increase in IDC because of the edge
-    '''
+    
     
     k=K
     def Misra_Gries_Algo(lst1, key_freq):
@@ -49,10 +66,10 @@ def Misra_Gries_fn(K, isDirected):
 
             edge_update(k, key_freq, node2, bool2)
             
-            '''
+            
             If graph is undirected then the source node should also have increase in Indegree Centrality
             In such a case, only its MG frequency should be affected and others should not be subtracted
-            '''
+            
             
             if isDirected:
                 bool1 = 1
@@ -73,12 +90,12 @@ def Misra_Gries_fn(K, isDirected):
 
 class indegree_TOPK_MG(object):
 
-    '''
     is_directed is the boolean for directedness of graph
     iStream is the input stream of edges
     k sets the fraction for the frequency of the vertice
     if vertice frequency > N/k, it will be outputted
-    '''
+    
+
     
     def __init__(self, input_s, k, is_directed, w_size = 15, step_size = 15, oStream = []):
         self.iStream = input_s
@@ -90,7 +107,7 @@ class indegree_TOPK_MG(object):
         mg_f = Misra_Gries_fn(self.K, self.is_directed)
         self.topK = {}
         
-        self.mg_Agent = Operators.window_agent(mg_f, [self.iStream], [self.oStream], self.topK, None, self.window_size, self.step_size)
+        self.mg_Agent = window_agent(mg_f, [self.iStream], [self.oStream], self.topK, None, self.window_size, self.step_size)
 
     def topK_query(self):
         print self.topK
@@ -98,7 +115,7 @@ class indegree_TOPK_MG(object):
     
 
 
-'''
+
 input_stream = Stream('input')
 a = Misra_Gries_Class(input_stream, 3)
 input_stream.extend([1,2,3,2,1])
